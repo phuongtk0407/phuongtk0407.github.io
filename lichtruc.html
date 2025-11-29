@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lịch Phân Công Chu Kỳ Hàng Tháng</title>
+    <!-- Tải Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Thiết lập font Inter -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fb;
+        }
+        /* Tùy chỉnh màu sắc Tailwind */
+        :root {
+            --primary: #4f46e5;
+            --secondary: #10b981;
+        }
+        .text-primary { color: var(--primary); }
+        .bg-primary { background-color: var(--primary); }
+        .border-primary { border-color: var(--primary); }
+    </style>
+</head>
+<body class="p-4 md:p-8 min-h-screen">
+
+    <div id="app" class="max-w-7xl mx-auto bg-white shadow-xl rounded-2xl p-4 md:p-8">
+        
+        <!-- Tiêu đề và Điều hướng Tháng -->
+        <header class="mb-6 flex flex-col sm:flex-row justify-between items-center space-y-4 sm:space-y-0">
+            <h1 class="text-3xl font-extrabold text-gray-800">Lịch Phân Công Chu Kỳ (8 Cặp)</h1>
+            
+            <div class="flex items-center space-x-3">
+                <button id="prevMonth" class="p-2 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 transition duration-150">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                </button>
+                <div id="currentMonthYear" class="text-2xl font-semibold text-primary min-w-[150px] text-center">
+                    Loading...
+                </div>
+                <button id="nextMonth" class="p-2 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 transition duration-150">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                </button>
+            </div>
+        </header>
+
+        <!-- Ngày trong Tuần -->
+        <div class="grid grid-cols-7 gap-2 mb-4 text-center font-bold text-sm md:text-base text-gray-600">
+            <div class="p-2 bg-red-100 rounded-lg">CN</div>
+            <div class="p-2 bg-gray-100 rounded-lg">T2</div>
+            <div class="p-2 bg-gray-100 rounded-lg">T3</div>
+            <div class="p-2 bg-gray-100 rounded-lg">T4</div>
+            <div class="p-2 bg-gray-100 rounded-lg">T5</div>
+            <div class="p-2 bg-gray-100 rounded-lg">T6</div>
+            <div class="p-2 bg-secondary/20 text-secondary rounded-lg">T7</div>
+        </div>
+
+        <!-- Lịch và Ngày -->
+        <div id="calendarGrid" class="grid grid-cols-7 gap-2">
+            <!-- Các ô ngày sẽ được thêm vào đây bằng JavaScript -->
+            <div class="col-span-7 text-center p-8 text-gray-500" id="loadingState">
+                Đang tải dữ liệu...
+            </div>
+        </div>
+        
+        <!-- Thông tin Trạng thái -->
+        <div class="mt-8 text-sm text-gray-500">
+            <p>
+                <span id="saveStatus" class="font-medium text-secondary">Đã sẵn sàng.</span>
+                <span id="userIdDisplay" class="ml-4 text-xs bg-gray-100 p-1 rounded">ID Người dùng: Chưa xác định</span>
+            </p>
+            <p class="mt-2 text-xs">
+                Lưu ý: Dữ liệu được lưu trữ tự động trong cơ sở dữ liệu Firebase Firestore công khai và cho phép chỉnh sửa theo thời gian thực (real-time).
+                <br>Các cặp mặc định được định nghĩa trong mã nguồn và luân phiên theo chu kỳ 8 ngày.
+            </p>
+        </div>
+
+    </div>
+
+    <!-- Firebase Scripts -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // Thiết lập cấu hình Firebase và biến toàn cục
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        let app, db, auth;
+        let userId = 'anonymous';
+        let currentCalendarDate = new Date();
+        let scheduleData = {}; // Cache dữ liệu lịch trình
+        let unsubscribe = null; // Biến lưu trữ hàm hủy onSnapshot
+        
+        // --- 1. ĐỊNH NGHĨA 8 CẶP CHU KỲ (8 pairs, 16 individuals) ---
+        // Bạn có thể chỉnh sửa danh sách này theo ý muốn
+        const fixedPairs = [
+            ["Nguyễn Văn A", "Trần Thị B"], // Cặp 1
+            ["Lê Văn C", "Phạm Thị D"],     // Cặp 2
+            ["Hoàng Văn E", "Vũ Thị F"],     // Cặp 3
+            ["Đỗ Văn G", "Bùi Thị H"],      // Cặp 4
+            ["Phan Văn I", "Đinh Thị K"],     // Cặp 5
+            ["Trịnh Văn L", "Ngô Thị M"],    // Cặp 6
+            ["Chung Văn N", "Cao Thị P"],     // Cặp 7
+            ["Tạ Văn Q", "Thân Thị R"]       // Cặp 8
+        ];
+        const numPairs = fixedPairs.length; // Luôn là 8
+
+        // Lấy các phần tử DOM
+        const calendarGrid = document.getElementById('calendarGrid');
+        const currentMonthYearEl = document.getElementById('currentMonthYear');
+        const saveStatusEl = document.getElementById('saveStatus');
+        const userIdDisplayEl = document.getElementById('userIdDisplay');
+        const loadingStateEl = document.getElementById('loadingState');
+        const prevMonthButton = document.getElementById('prevMonth');
+        const nextMonthButton = document.getElementById('nextMonth');
+
+        // Tên tháng bằng tiếng Việt
+        const monthNames = [
+            "Tháng 1", "Tháng 2", "Tháng 3", "Tháng 4", "Tháng 5", "Tháng 6",
+            "Tháng 7", "Tháng 8", "Tháng 9", "Tháng 10", "Tháng 11", "Tháng 12"
+        ];
+
+        // --- HÀM TIỆN ÍCH FIREBASE ---
+
+        // Hàm debounce để giới hạn tần suất gọi hàm (quan trọng cho việc lưu)
+        function debounce(func, timeout = 500) {
+            let timer;
+            return (...args) => {
+                clearTimeout(timer);
+                timer = setTimeout(() => { func.apply(this, args); }, timeout);
+            };
+        }
+
+        // Tạo đường dẫn tài liệu Firestore công khai
+        function getScheduleDocPath(date) {
+            const year = date.getFullYear();
+            const month = date.getMonth() + 1;
+            const docId = `${year}-${String(month).padStart(2, '0')}`;
+            // Đường dẫn công khai: /artifacts/{appId}/public/data/monthly_schedule/{docId}
+            return `artifacts/${appId}/public/data/monthly_schedule/${docId}`;
+        }
+        
+        // Cập nhật Firestore với dữ liệu hiện tại
+        const saveScheduleToFirestore = debounce(async (docPath, data) => {
+            if (!db || !userId || userId === 'anonymous') return;
+            saveStatusEl.textContent = 'Đang lưu...';
+            saveStatusEl.classList.remove('text-secondary', 'text-red-600');
+            saveStatusEl.classList.add('text-yellow-600');
+
+            try {
+                // Sử dụng setDoc để ghi đè hoặc tạo mới tài liệu
+                await setDoc(doc(db, docPath), data, { merge: true });
+                saveStatusEl.textContent = 'Đã lưu thành công!';
+                saveStatusEl.classList.remove('text-yellow-600');
+                saveStatusEl.classList.add('text-secondary');
+            } catch (error) {
+                console.error("Lỗi khi lưu lịch trình:", error);
+                saveStatusEl.textContent = 'Lỗi lưu dữ liệu!';
+                saveStatusEl.classList.remove('text-yellow-600', 'text-secondary');
+                saveStatusEl.classList.add('text-red-600');
+            } finally {
+                // Tự động chuyển về trạng thái sẵn sàng sau 2 giây
+                setTimeout(() => {
+                    saveStatusEl.textContent = 'Đã sẵn sàng.';
+                    saveStatusEl.classList.remove('text-red-600', 'text-yellow-600');
+                    saveStatusEl.classList.add('text-secondary');
+                }, 2000);
+            }
+        });
+
+        // --- HÀM HIỂN THỊ UI & LỊCH ---
+
+        // Tạo một ô ngày trong lịch
+        function createDayCell(dayNumber, dataForDay, monthDate, defaultData) {
+            const cell = document.createElement('div');
+            const today = new Date();
+            const isToday = monthDate.getFullYear() === today.getFullYear() && 
+                            monthDate.getMonth() === today.getMonth() && 
+                            dayNumber === today.getDate();
+            const dayOfWeek = new Date(monthDate.getFullYear(), monthDate.getMonth(), dayNumber).getDay(); // 0=CN, 1=T2...
+            const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+
+            // Xây dựng các lớp Tailwind cho ô ngày
+            let cellClasses = 'p-3 rounded-xl border transition-all duration-300 shadow-sm min-h-[180px] flex flex-col space-y-1';
+            
+            if (isToday) {
+                cellClasses += ' border-4 border-primary bg-primary/10';
+            } else if (isWeekend) {
+                cellClasses += ' bg-red-50 border-red-200';
+            } else {
+                cellClasses += ' bg-white border-gray-200 hover:shadow-md';
+            }
+
+            cell.className = cellClasses;
+            cell.setAttribute('data-day', dayNumber);
+
+            // Nội dung: Ngày (Date)
+            const dateEl = document.createElement('div');
+            dateEl.className = 'text-xl font-extrabold mb-1 ' + (isToday ? 'text-primary' : (isWeekend ? 'text-red-600' : 'text-gray-800'));
+            dateEl.textContent = dayNumber;
+            cell.appendChild(dateEl);
+
+            // Nội dung: Danh sách Người Chịu Trách Nhiệm (Editable List)
+            const namesContainer = document.createElement('ul');
+            namesContainer.className = 'text-sm space-y-1.5 mt-2';
+
+            // Kiểm tra trạng thái ghi đè (override)
+            const isOverridden = dataForDay[0] !== defaultData[0] || dataForDay[1] !== defaultData[1];
+            
+            // Chỉ tạo 2 ô chịu trách nhiệm (index 0 và 1)
+            for (let i = 0; i < 2; i++) {
+                const name = dataForDay[i] || '';
+                const listItem = document.createElement('li');
+                
+                // Sử dụng div contentEditable để dễ chỉnh sửa
+                const nameInput = document.createElement('div');
+                nameInput.textContent = name;
+                nameInput.contentEditable = true;
+                
+                let inputClasses = 'p-0.5 rounded focus:outline-none focus:ring-2 cursor-pointer transition-colors duration-100';
+                if (isOverridden) {
+                    // Ô bị ghi đè
+                    inputClasses += ' bg-yellow-200 focus:ring-yellow-500 shadow-md'; 
+                } else {
+                    // Ô mặc định theo chu kỳ
+                    inputClasses += ' hover:bg-gray-100 focus:ring-primary/50'; 
+                }
+
+                nameInput.className = inputClasses;
+                nameInput.setAttribute('data-index', i);
+
+                // Lắng nghe sự kiện chỉnh sửa
+                nameInput.addEventListener('blur', (e) => handleNameEdit(e, dayNumber, defaultData));
+                nameInput.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault(); // Ngăn ngừa xuống dòng mặc định
+                        e.target.blur(); // Tắt chế độ chỉnh sửa để kích hoạt 'blur' và lưu
+                    }
+                });
+
+                listItem.appendChild(nameInput);
+                namesContainer.appendChild(listItem);
+            }
+
+            cell.appendChild(namesContainer);
+            
+            // Chú thích cặp người chịu trách nhiệm
+            const pairNote = document.createElement('div');
+            pairNote.className = 'text-xs mt-3 italic text-gray-500';
+            pairNote.textContent = `Cặp ${((dayNumber - 1) % numPairs) + 1}/${numPairs}`;
+            cell.appendChild(pairNote);
+
+            return cell;
+        }
+        
+        // Xử lý sự kiện chỉnh sửa tên
+        function handleNameEdit(event, dayNumber, defaultData) {
+            const target = event.target;
+            const newName = target.textContent.trim();
+            const index = parseInt(target.getAttribute('data-index'));
+            
+            if (index >= 2) return; // Chỉ xử lý 2 người
+
+            // Lấy docId hiện tại
+            const docId = getScheduleDocPath(currentCalendarDate);
+            const dayKey = String(dayNumber);
+
+            // Lấy dữ liệu hiện tại (hoặc mặc định nếu chưa có override)
+            let currentData = (scheduleData[docId] && Array.isArray(scheduleData[docId][dayKey]) && scheduleData[docId][dayKey].length === 2) 
+                ? [...scheduleData[docId][dayKey]]
+                : [...defaultData];
+            
+            // Cập nhật tên mới
+            currentData[index] = newName;
+            
+            // Kiểm tra xem dữ liệu mới có giống với giá trị mặc định của chu kỳ không
+            const isDefault = currentData[0] === defaultData[0] && currentData[1] === defaultData[1];
+            
+            // Cập nhật UI ngay lập tức
+            if (isDefault) {
+                target.classList.remove('bg-yellow-200', 'focus:ring-yellow-500', 'shadow-md');
+                target.classList.add('hover:bg-gray-100', 'focus:ring-primary/50');
+            } else {
+                target.classList.remove('hover:bg-gray-100', 'focus:ring-primary/50');
+                target.classList.add('bg-yellow-200', 'focus:ring-yellow-500', 'shadow-md');
+            }
+
+            // Cập nhật cache và Firestore
+            scheduleData[docId][dayKey] = currentData;
+            const dataToSave = { [dayKey]: currentData }; 
+            
+            // Gửi lên Firestore (sử dụng debounce để tự động lưu)
+            saveScheduleToFirestore(docId, dataToSave);
+        }
+
+
+        // Vẽ lịch cho tháng hiện tại
+        function renderCalendar() {
+            calendarGrid.innerHTML = '';
+            loadingStateEl.style.display = 'none';
+
+            const year = currentCalendarDate.getFullYear();
+            const month = currentCalendarDate.getMonth();
+            currentMonthYearEl.textContent = `${monthNames[month]} ${year}`;
+
+            // Tìm ngày đầu tiên của tháng (1 = T2, 0 = CN)
+            const firstDayOfMonth = new Date(year, month, 1);
+            const startingDayOfWeek = firstDayOfMonth.getDay(); // 0 (CN) đến 6 (T7)
+            
+            // Số ngày trong tháng
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+            // Tính số ô trống (padding) ở đầu
+            let paddingDays = (startingDayOfWeek + 6) % 7; 
+            if (startingDayOfWeek === 0) {
+                 paddingDays = 6; 
+            } else {
+                 paddingDays = startingDayOfWeek - 1; 
+            }
+
+            // Thêm các ô trống trước ngày 1
+            for (let i = 0; i < paddingDays; i++) {
+                const emptyCell = document.createElement('div');
+                emptyCell.className = 'p-3 min-h-[180px] bg-gray-50 rounded-xl';
+                calendarGrid.appendChild(emptyCell);
+            }
+
+            // Dữ liệu cho tháng hiện tại từ cache
+            const docId = getScheduleDocPath(currentCalendarDate);
+            const currentMonthData = scheduleData[docId] || {};
+
+
+            // Thêm các ô ngày thực tế
+            for (let day = 1; day <= daysInMonth; day++) {
+                const dayKey = String(day);
+                
+                // 1. Tính cặp mặc định theo chu kỳ 8 ngày
+                const defaultPairIndex = (day - 1) % numPairs;
+                const defaultData = fixedPairs[defaultPairIndex];
+
+                // 2. Kiểm tra override từ Firestore
+                const overrideData = currentMonthData[dayKey];
+                
+                // 3. Dữ liệu thực tế được render (Override ưu tiên)
+                const dataToRender = Array.isArray(overrideData) && overrideData.length === 2 
+                    ? overrideData 
+                    : defaultData; 
+                
+                // 4. Render cell
+                const cell = createDayCell(day, dataToRender, currentCalendarDate, defaultData);
+                calendarGrid.appendChild(cell);
+            }
+        }
+
+        // --- HÀM XỬ LÝ DỮ LIỆU & AUTH ---
+
+        // Khởi tạo Firebase và đăng nhập
+        async function initializeAndAuth() {
+            if (Object.keys(firebaseConfig).length === 0) {
+                console.error("Lỗi: Không tìm thấy cấu hình Firebase.");
+                loadingStateEl.textContent = 'Lỗi: Không tìm thấy cấu hình Firebase. Vui lòng kiểm tra biến __firebase_config.';
+                return;
+            }
+            
+            setLogLevel('debug'); // Bật log debug cho Firestore
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+
+            // Đăng nhập với token hoặc ẩn danh
+            try {
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Lỗi đăng nhập Firebase:", error);
+                loadingStateEl.textContent = 'Lỗi đăng nhập Firebase. Kiểm tra console để biết chi tiết.';
+                return;
+            }
+
+            // Đảm bảo lấy được userId sau khi đăng nhập
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    userId = user.uid;
+                    userIdDisplayEl.textContent = `ID Người dùng: ${userId}`;
+                    // Bắt đầu lắng nghe dữ liệu sau khi auth xong
+                    setupRealtimeListener(currentCalendarDate);
+                } else {
+                    userId = 'anonymous';
+                    userIdDisplayEl.textContent = `ID Người dùng: Chưa xác định`;
+                }
+            });
+        }
+
+        // Thiết lập lắng nghe Real-time từ Firestore
+        function setupRealtimeListener(date) {
+            // Hủy listener cũ nếu có
+            if (unsubscribe) {
+                unsubscribe();
+            }
+
+            const docPath = getScheduleDocPath(date);
+            const scheduleRef = doc(db, docPath);
+
+            // Bắt đầu listener mới
+            unsubscribe = onSnapshot(scheduleRef, (docSnap) => {
+                const docPath = getScheduleDocPath(date); // Re-calculate in case of async delay
+                if (docSnap.exists()) {
+                    // Cập nhật cache với dữ liệu từ Firestore
+                    const data = docSnap.data();
+                    scheduleData[docPath] = data;
+                    console.log("Dữ liệu được cập nhật từ Firestore:", data);
+                } else {
+                    // Nếu tài liệu chưa tồn tại, khởi tạo nó trong cache
+                    scheduleData[docPath] = {};
+                    console.log("Tài liệu lịch trình chưa tồn tại. Khởi tạo cục bộ.");
+                }
+                // Luôn gọi render để vẽ lại lịch với dữ liệu mới nhất (dù là mới load hay cập nhật)
+                renderCalendar(); 
+            }, (error) => {
+                console.error("Lỗi lắng nghe real-time:", error);
+                loadingStateEl.textContent = 'Lỗi kết nối Real-time. Kiểm tra console.';
+            });
+        }
+        
+        // Xử lý chuyển tháng
+        function changeMonth(delta) {
+            // Thay đổi tháng
+            currentCalendarDate.setMonth(currentCalendarDate.getMonth() + delta);
+            // Thiết lập lại listener cho tháng mới
+            setupRealtimeListener(currentCalendarDate);
+        }
+
+        // --- KHỞI ĐỘNG ỨNG DỤNG ---
+        
+        // Thiết lập sự kiện click cho nút điều hướng
+        prevMonthButton.addEventListener('click', () => changeMonth(-1));
+        nextMonthButton.addEventListener('click', () => changeMonth(1));
+
+        // Khởi động
+        window.onload = initializeAndAuth;
+        
+    </script>
+</body>
+</html>
